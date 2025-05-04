@@ -1,0 +1,199 @@
+
+# SQL Server 資料庫備份與還原
+
+## 目錄
+- [一、備份與還原計劃](#一備份與還原計劃)
+- [二、自動化執行命令檔 (.cmd)](#二自動化執行命令檔-cmd)
+- [三、安全性設定](#三安全性設定)
+- [四、SSMS 安全設定流程](#四ssms-安全設定流程)
+- [五、SQL Server 備份與還原流程](#五sql-server-備份與還原流程)
+- [六、提醒清單](#六提醒清單)
+
+## 一、備份與還原計劃
+
+### 1. 完整備份 (Full Backup)
+- **目的**：備份整個資料庫。
+- **頻率**：每週執行一次。
+- **指令**：
+```sql
+BACKUP DATABASE RetailCompany
+TO RetailCompany_BackupDevice
+WITH INIT, FORMAT, NAME = 'Scheduled Full Backup';
+```
+
+### 2. 差異備份 (Differential Backup)
+- **目的**：備份從上次完整備份後發生的變動。
+- **頻率**：每天執行一次。
+- **指令**：
+```sql
+BACKUP DATABASE RetailCompany
+TO RetailCompany_BackupDevice
+WITH DIFFERENTIAL, NAME = 'Scheduled Differential Backup';
+```
+
+### 3. 交易記錄備份 (Log Backup)
+- **目的**：備份所有交易紀錄，避免資料遺失。
+- **頻率**：每小時執行一次。
+- **指令**：
+```sql
+DECLARE @logFile NVARCHAR(200);
+SET @logFile = 'C:\SQLBackups\RetailCompany_Log_' + FORMAT(GETDATE(), 'yyyyMMdd_HHmmss') + '.trn';
+
+BACKUP LOG RetailCompany
+TO DISK = @logFile
+WITH NAME = 'Scheduled Log Backup';
+```
+
+### 4. 快速還原
+- **目的**：直接還原到最近的完整或差異備份。
+- **指令**：
+```sql
+RESTORE DATABASE RetailCompany
+FROM RetailCompany_BackupDevice
+WITH REPLACE, RECOVERY;
+```
+
+### 5. 時間點還原
+- **目的**：回復到指定時間點，例如誤刪資料前。
+- **指令**：
+```sql
+RESTORE LOG RetailCompany
+FROM DISK = 'C:\SQLBackups\RetailCompany_Log_指定時間.trn'
+WITH STOPAT = 'YYYY-MM-DD HH:MM:SS', RECOVERY;
+```
+
+### 6. 測試還原
+- **目的**：將備份還原到新資料庫名稱，用於測試備份有效性。
+- **指令**：
+```sql
+RESTORE DATABASE RetailCompany_Test
+FROM RetailCompany_BackupDevice
+WITH MOVE 'RetailCompany_Data' TO 'C:\SQLBackups\RetailCompany_Test.mdf',
+     MOVE 'RetailCompany_Log' TO 'C:\SQLBackups\RetailCompany_Test.ldf',
+     RECOVERY;
+```
+
+### 7. 備份清理
+- **目的**：刪除14天前的備份歷史記錄（不含實體檔案）。
+- **指令**：
+```sql
+EXEC msdb.dbo.sp_delete_backuphistory @oldest_date = DATEADD(DAY, -14, GETDATE());
+```
+
+## 二、自動化執行命令檔 (.cmd)
+
+- **完整備份**
+```cmd
+sqlcmd -S DESKTOP-RMRPVGG -U backup_user -P StrongPass123! -i "C:\Scripts\Full_Backup.sql"
+```
+
+- **差異備份**
+```cmd
+sqlcmd -S DESKTOP-RMRPVGG -U backup_user -P StrongPass123! -i "C:\Scripts\Diff_Backup.sql"
+```
+
+- **交易記錄備份**
+```cmd
+sqlcmd -S DESKTOP-RMRPVGG -U backup_user -P StrongPass123! -i "C:\Scripts\Log_Backup.sql"
+```
+
+- **備份清理**
+```cmd
+sqlcmd -S DESKTOP-RMRPVGG -U backup_user -P StrongPass123! -i "C:\Scripts\Backup_Cleanup.sql"
+```
+
+## 三、安全性設定
+
+### 建立備份專用帳號
+```sql
+CREATE LOGIN backup_user WITH PASSWORD = 'StrongPass123!';
+USE RetailCompany;
+CREATE USER backup_user FOR LOGIN backup_user;
+EXEC sp_addrolemember 'db_backupoperator', 'backup_user';
+```
+
+### 驗證帳號角色
+```sql
+SELECT dp.name AS DatabaseRoleName, mp.name AS MemberName
+FROM sys.database_role_members drm
+JOIN sys.database_principals dp ON drm.role_principal_id = dp.principal_id
+JOIN sys.database_principals mp ON drm.member_principal_id = mp.principal_id
+WHERE mp.name = 'backup_user';
+```
+
+### 驗證備份檔案有效性
+```sql
+RESTORE VERIFYONLY FROM DISK = 'C:\SQLBackups\RetailCompany_Encrypted.bak';
+```
+
+**注意事項**：
+- 密碼務必設為強密碼，不用預設值。
+- C:\SQLBackups 資料夾僅授權給 SQL Server 執行帳號與授權用戶。
+
+## 四、SSMS 安全設定流程
+
+1. 啟用混合驗證模式：伺服器 → 內容 → 安全性 → 勾選「SQL Server 和 Windows 驗證模式」，並重啟服務。
+2. 建立登入帳號：SSMS → 安全性 → 登入 → 新增登入。
+3. 對應資料庫使用者與角色：SSMS → 資料庫 → 安全性 → 使用者 → 新增使用者。
+4. 設定資料夾權限：確保 C:\SQLBackups 僅授權 SQL Server 執行帳號與授權用戶。
+5. 驗證權限：使用 backup_user 登入，測試備份與還原指令是否可執行。
+
+## 五、SQL Server 備份與還原流程
+
+### 完整備份流程
+1. 開啟 SSMS，連線到目標伺服器。
+2. 資料庫 → 工作 → 備份 → 選擇完整 → 指定 C:\SQLBackups\RetailCompany_Full.bak。
+3. 勾選驗證與 CHECKSUM。
+4. 按確定執行。
+
+### 差異備份流程
+同上，備份類型選擇差異，指定新檔案名稱，按確定執行。
+
+### 交易記錄備份流程
+同上，備份類型選擇交易記錄，指定新檔案名稱，按確定執行。
+
+### 異地備份
+1. 複製備份檔至異地伺服器或雲端。
+2. 設定自動排程。
+3. 驗證異地還原。
+
+### 自動化備份設定（SQL Agent Job）
+1. SQL Server Agent → 作業 → 新增作業。
+2. 步驟：執行 T-SQL 備份腳本。
+3. 排程：設定執行頻率。
+4. 設定通知。
+5. 測試作業。
+
+### 還原完整備份
+1. 資料庫 → 還原資料庫 → 選擇裝置與 .bak。
+2. 指定還原目標。
+3. 勾選 WITH REPLACE、CHECKSUM。
+4. 執行還原。
+
+### 還原差異與交易記錄
+1. 完整備份 WITH NORECOVERY。
+2. 差異備份 WITH NORECOVERY。
+3. 交易記錄 WITH RECOVERY。
+4. 指定 STOPAT 時間（如需要）。
+
+### 異機還原
+1. 檢查版本相容性。
+2. 指定新的資料與日誌路徑（WITH MOVE）。
+3. 使用 RESTORE HEADERONLY 檢視備份內容。
+4. 還原後執行 DBCC CHECKDB。
+
+**注意事項**：
+- 定期測試備份有效性。
+- 啟用 CHECKSUM 與 VERIFYONLY。
+- 管控備份檔案授權。
+- 異地備份需設自動化監控。
+- 排程作業應設通知與錯誤警示。
+
+## 六、提醒清單
+
+- 定期測試你的備份還原流程（建議每月至少一次）。
+- 確認 SQL Agent Jobs 是否按預定排程執行，並記錄結果。
+- 每 1～3 個月檢查異地備份，確認檔案完整可還原。
+- 檢視帳號權限與安全性設定，避免因環境變更造成權限遺失或過寬。
+- 如果有系統升級（如 SQL Server 版本更新），務必測試備份與還原的相容性。
+- 保留一份離線文件（例如今天的 .md 檔案與純文字檔）在安全的地方。
